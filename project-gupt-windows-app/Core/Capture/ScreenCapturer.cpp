@@ -1,0 +1,150 @@
+#include "ScreenCapturer.h"
+#include <iostream>
+#include <wincodec.h>
+#pragma comment(lib, "windowscodecs.lib")
+
+namespace gupt {
+namespace core {
+namespace capture {
+
+ScreenCapturer::ScreenCapturer() {}
+ScreenCapturer::~ScreenCapturer() {}
+
+bool ScreenCapturer::Initialize() {
+    // With GDI, we don't need heavy graphics initializations.
+    std::cout << "Screen capturer initialized using robust GDI backend." << std::endl;
+    return true;
+}
+
+bool ScreenCapturer::CaptureNextFrame(std::vector<uint8_t>& outPixels, uint32_t& outWidth, uint32_t& outHeight) {
+    HDC hScreenDC = GetDC(NULL);
+    HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
+    
+    int width = GetSystemMetrics(SM_CXSCREEN);
+    int height = GetSystemMetrics(SM_CYSCREEN);
+    
+    HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, width, height);
+    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hMemoryDC, hBitmap);
+    
+    // Copy the entire screen into our memory device context
+    BitBlt(hMemoryDC, 0, 0, width, height, hScreenDC, 0, 0, SRCCOPY);
+    SelectObject(hMemoryDC, hOldBitmap);
+    
+    BITMAPINFO bi = {0};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = width;
+    bi.bmiHeader.biHeight = -height; // Negative means top-down row order
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    outWidth = width;
+    outHeight = height;
+    
+    uint32_t stride = width * 4;
+    outPixels.resize(stride * height);
+    
+    // Extract the raw pixel bits into our outgoing vector
+    if (!GetDIBits(hScreenDC, hBitmap, 0, height, outPixels.data(), &bi, DIB_RGB_COLORS)) {
+        DeleteObject(hBitmap);
+        DeleteDC(hMemoryDC);
+        ReleaseDC(NULL, hScreenDC);
+        return false;
+    }
+
+    // GDI GetDIBits sets the alpha byte (byte 3) to 0x00 for all pixels.
+    // The WIC JPEG encoder treats GUID_WICPixelFormat32bppBGRA as premultiplied:
+    // with alpha=0, all colours premultiply to 0 → black lines / RGB fringing.
+    // Fix: force alpha=0xFF (fully opaque) on every pixel before encoding.
+    for (size_t i = 3; i < outPixels.size(); i += 4)
+        outPixels[i] = 0xFF;
+
+    DeleteObject(hBitmap);
+    DeleteDC(hMemoryDC);
+    ReleaseDC(NULL, hScreenDC);
+    
+    return true;
+}
+
+bool ScreenCapturer::CaptureNextFrameJpeg(std::vector<uint8_t>& outJpeg, uint32_t& outWidth, uint32_t& outHeight, int quality) {
+    std::vector<uint8_t> rawPixels;
+    if (!CaptureNextFrame(rawPixels, outWidth, outHeight)) return false;
+
+    IWICImagingFactory* pFactory = NULL;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory));
+    if (FAILED(hr)) return false;
+
+    IWICBitmapEncoder* pEncoder = NULL;
+    hr = pFactory->CreateEncoder(GUID_ContainerFormatJpeg, NULL, &pEncoder);
+    if (FAILED(hr)) { pFactory->Release(); return false; }
+
+    IStream* pStream = NULL;
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &pStream);
+    if (FAILED(hr)) { pEncoder->Release(); pFactory->Release(); return false; }
+
+    hr = pEncoder->Initialize(pStream, WICBitmapEncoderNoCache);
+    if (FAILED(hr)) { pStream->Release(); pEncoder->Release(); pFactory->Release(); return false; }
+
+    IWICBitmapFrameEncode* pFrame = NULL;
+    IPropertyBag2* pPropertybag = NULL;
+    hr = pEncoder->CreateNewFrame(&pFrame, &pPropertybag);
+    if (FAILED(hr)) { pStream->Release(); pEncoder->Release(); pFactory->Release(); return false; }
+
+    PROPBAG2 option = { 0 };
+    option.pstrName = (LPOLESTR)L"ImageQuality";
+    VARIANT varValue;
+    VariantInit(&varValue);
+    varValue.vt = VT_R4;
+    varValue.fltVal = quality / 100.0f;
+    hr = pPropertybag->Write(1, &option, &varValue);
+
+    hr = pFrame->Initialize(pPropertybag);
+    if (FAILED(hr)) { pPropertybag->Release(); pFrame->Release(); pStream->Release(); pEncoder->Release(); pFactory->Release(); return false; }
+
+    hr = pFrame->SetSize(outWidth, outHeight);
+
+    // JPEG does not support alpha. WIC silently changes GUID_WICPixelFormat32bppBGRA
+    // to 24bppBGR, but if we still pass stride=width*4, every row shifts by 1 byte
+    // causing diagonal colored lines. Fix: convert to 24bppBGR explicitly first.
+    std::vector<uint8_t> bgrPixels(outWidth * outHeight * 3);
+    for (uint32_t i = 0; i < outWidth * outHeight; ++i) {
+        bgrPixels[i * 3 + 0] = rawPixels[i * 4 + 0]; // B
+        bgrPixels[i * 3 + 1] = rawPixels[i * 4 + 1]; // G
+        bgrPixels[i * 3 + 2] = rawPixels[i * 4 + 2]; // R  (alpha discarded)
+    }
+
+    WICPixelFormatGUID formatGUID = GUID_WICPixelFormat24bppBGR;
+    hr = pFrame->SetPixelFormat(&formatGUID);
+
+    UINT stride = outWidth * 3;
+    UINT cbBufferSize = stride * outHeight;
+    hr = pFrame->WritePixels(outHeight, stride, cbBufferSize, bgrPixels.data());
+
+    hr = pFrame->Commit();
+    hr = pEncoder->Commit();
+
+    STATSTG statstg;
+    pStream->Stat(&statstg, STATFLAG_NONAME);
+    UINT streamSize = statstg.cbSize.LowPart;
+
+    outJpeg.resize(streamSize);
+    LARGE_INTEGER liZero = { 0 };
+    pStream->Seek(liZero, STREAM_SEEK_SET, NULL);
+    ULONG bytesRead = 0;
+    pStream->Read(outJpeg.data(), streamSize, &bytesRead);
+
+    pPropertybag->Release();
+    pFrame->Release();
+    pStream->Release();
+    pEncoder->Release();
+    pFactory->Release();
+
+    return true;
+}
+
+void ScreenCapturer::ReleaseFrame() {
+}
+
+} // namespace capture
+} // namespace core
+} // namespace gupt
