@@ -60,7 +60,14 @@ void TcpServer::ReceiveLoop(int client) {
 
 void TcpServer::SendRaw(const std::vector<uint8_t>& data) {
     if (m_clientSocket != -1) {
-        send(m_clientSocket, data.data(), data.size(), 0);
+        const uint8_t* ptr = data.data();
+        size_t totalSent = 0;
+        size_t toSend = data.size();
+        while (totalSent < toSend) {
+            ssize_t sent = send(m_clientSocket, ptr + totalSent, toSend - totalSent, 0);
+            if (sent <= 0) break;
+            totalSent += sent;
+        }
     }
 }
 
@@ -110,7 +117,14 @@ void TcpClient::ReceiveLoop() {
 
 void TcpClient::SendRaw(const std::vector<uint8_t>& data) {
     if (m_connected) {
-        send(m_socket, data.data(), data.size(), 0);
+        const uint8_t* ptr = data.data();
+        size_t totalSent = 0;
+        size_t toSend = data.size();
+        while (totalSent < toSend) {
+            ssize_t sent = send(m_socket, ptr + totalSent, toSend - totalSent, 0);
+            if (sent <= 0) break;
+            totalSent += sent;
+        }
     }
 }
 

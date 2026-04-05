@@ -40,6 +40,7 @@
 
     server->SetMessageCallback([&](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
         if (type == gupt::shared::MessageType::ConnectRequest) {
+            NSLog(@"[DEBUG] Received connection request");
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSAlert *alert = [[NSAlert alloc] init];
                 alert.messageText = @"Connection Request";
@@ -52,11 +53,13 @@
                     std::strncpy(res.reason, "Welcome", sizeof(res.reason));
                     server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
                     sessionActive = true;
+                    NSLog(@"[DEBUG] Session accepted");
                 } else {
                     gupt::shared::ConnectResponse res;
                     res.accepted = false;
                     std::strncpy(res.reason, "User Denied", sizeof(res.reason));
                     server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
+                    NSLog(@"[DEBUG] Session denied by user");
                 }
             });
         } else if (sessionActive) {
@@ -71,6 +74,7 @@
     });
 
     server->Start();
+    NSLog(@"[DEBUG] Host server started on port 8080");
     
     std::thread([self]() {
         while (true) {
@@ -78,8 +82,11 @@
                 std::vector<uint8_t> jpeg;
                 uint32_t w, h;
                 if (capturer.CaptureNextFrameJpeg(jpeg, w, h, 80)) {
+                    // NSLog(@"[DEBUG] Captured frame %d x %d, size %zu bytes", w, h, jpeg.size());
                     gupt::shared::FrameDataHeader header{0, w, h, 32, false, 0};
                     server->SendRaw(gupt::shared::SerializeFrame(header, jpeg));
+                } else {
+                    NSLog(@"[DEBUG] Failed to capture frame (Check Screen Recording Permissions!)");
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
@@ -90,10 +97,20 @@
 - (void)runClientMode:(NSString*)ip {
     client = new gupt::core::network::TcpClient();
     client->SetMessageCallback([&](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
-        if (type == gupt::shared::MessageType::FrameData) {
+        if (type == gupt::shared::MessageType::ConnectResponse) {
+             auto res = (const gupt::shared::ConnectResponse*)payload.data();
+             NSLog(@"[DEBUG] Connection response: accepted=%d, reason=%s", res->accepted, res->reason);
+        } else if (type == gupt::shared::MessageType::FrameData) {
             size_t off = sizeof(gupt::shared::FrameDataHeader);
+            if (payload.size() <= off) {
+                NSLog(@"[ERROR] Received malformed frame data (size %zu)", payload.size());
+                return;
+            }
             NSData *data = [NSData dataWithBytes:payload.data() + off length:payload.size() - off];
             NSImage *image = [[NSImage alloc] initWithData:data];
+            if (!image) {
+                NSLog(@"[ERROR] Failed to create NSImage from data (size %zu)", data.length);
+            }
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.remoteView.latestImage = image;
                 [self.remoteView setNeedsDisplay:YES];
@@ -101,11 +118,15 @@
         }
     });
 
+    NSLog(@"[DEBUG] Client connecting to %@", ip);
     if (client->Connect([ip UTF8String], 8080)) {
         gupt::shared::ConnectRequest req;
         std::strncpy(req.sessionId, "session", sizeof(req.sessionId));
         std::strncpy(req.authenticationToken, "token", sizeof(req.authenticationToken));
         client->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectRequest, req));
+        NSLog(@"[DEBUG] Connection request sent");
+    } else {
+        NSLog(@"[ERROR] Failed to connect to %@", ip);
     }
 }
 
@@ -121,6 +142,7 @@
         [self runHostMode];
     } else {
         NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)];
+        input.stringValue = @"127.0.0.1";
         NSAlert *ipAlert = [[NSAlert alloc] init];
         ipAlert.messageText = @"Enter Host IP";
         ipAlert.accessoryView = input;
