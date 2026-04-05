@@ -16,5 +16,7 @@
     <string>12.3</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Gupt Remote needs screen recording permission to share your screen with the remote client.</string>
 </dict>
 </plist>
