@@ -44,12 +44,17 @@ void TcpServer::ListenLoop() {
 
 void TcpServer::ReceiveLoop(int client) {
     while (m_running) {
-        uint8_t type;
-        if (recv(client, &type, 1, 0) <= 0) break;
+        gupt::shared::MessageHeader hdr;
+        if (recv(client, &hdr, sizeof(hdr), MSG_WAITALL) <= 0) break;
         
-        uint32_t size;
-        if (recv(client, &size, 4, MSG_PEEK) <= 0) break; // Simplified framing for demo
-        // ... Proper framing logic here ...
+        std::vector<uint8_t> payload(hdr.payloadSize);
+        if (hdr.payloadSize > 0) {
+            if (recv(client, payload.data(), hdr.payloadSize, MSG_WAITALL) <= 0) break;
+        }
+
+        if (m_callback) {
+            m_callback(hdr.type, payload);
+        }
     }
 }
 
@@ -88,7 +93,19 @@ void TcpClient::Disconnect() {
 }
 
 void TcpClient::ReceiveLoop() {
-    // simplified receive loop
+    while (m_connected) {
+        gupt::shared::MessageHeader hdr;
+        if (recv(m_socket, &hdr, sizeof(hdr), MSG_WAITALL) <= 0) break;
+        
+        std::vector<uint8_t> payload(hdr.payloadSize);
+        if (hdr.payloadSize > 0) {
+            if (recv(m_socket, payload.data(), hdr.payloadSize, MSG_WAITALL) <= 0) break;
+        }
+
+        if (m_callback) {
+            m_callback(hdr.type, payload);
+        }
+    }
 }
 
 void TcpClient::SendRaw(const std::vector<uint8_t>& data) {

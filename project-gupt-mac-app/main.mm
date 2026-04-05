@@ -47,11 +47,15 @@
                 [alert addButtonWithTitle:@"Allow"];
                 [alert addButtonWithTitle:@"Deny"];
                 if ([alert runModal] == NSAlertFirstButtonReturn) {
-                    gupt::shared::ConnectResponse res{true, "Welcome"};
+                    gupt::shared::ConnectResponse res;
+                    res.accepted = true;
+                    std::strncpy(res.reason, "Welcome", sizeof(res.reason));
                     server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
                     sessionActive = true;
                 } else {
-                    gupt::shared::ConnectResponse res{false, "User Denied"};
+                    gupt::shared::ConnectResponse res;
+                    res.accepted = false;
+                    std::strncpy(res.reason, "User Denied", sizeof(res.reason));
                     server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
                 }
             });
@@ -98,7 +102,9 @@
     });
 
     if (client->Connect([ip UTF8String], 8080)) {
-        gupt::shared::ConnectRequest req{"session", "token"};
+        gupt::shared::ConnectRequest req;
+        std::strncpy(req.sessionId, "session", sizeof(req.sessionId));
+        std::strncpy(req.authenticationToken, "token", sizeof(req.authenticationToken));
         client->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectRequest, req));
     }
 }

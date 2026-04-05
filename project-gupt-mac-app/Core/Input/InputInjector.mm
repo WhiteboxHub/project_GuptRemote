@@ -43,7 +43,7 @@ void InputInjector::IngestMouseEvent(const gupt::shared::MouseEvent& ev) {
 }
 
 void InputInjector::IngestKeyboardEvent(const gupt::shared::KeyboardEvent& ev) {
-    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)ev.virtualKeyCode, ev.isDown);
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)ev.virtualKey, ev.isDown);
     if (event) {
         CGEventPost(kCGHIDEventTap, event);
         CFRelease(event);
