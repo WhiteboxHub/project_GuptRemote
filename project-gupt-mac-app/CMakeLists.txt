@@ -27,7 +27,7 @@ set(MACOS_LIBS
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-add_executable(GuptMac
+add_executable(GuptMac MACOSX_BUNDLE
     main.mm
     Shared/Protocol.h
     Core/Capture/ScreenCapturer.h
@@ -40,5 +40,10 @@ add_executable(GuptMac
 
 target_link_libraries(GuptMac PRIVATE ${MACOS_LIBS})
 
-# Enable ARC for Objective-C++
-set_target_properties(GuptMac PROPERTIES XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC "YES")
+# macOS Bundle Properties
+set_target_properties(GuptMac PROPERTIES
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.gupt.remotedesktop"
+    MACOSX_BUNDLE_BUNDLE_NAME "GuptMac"
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist
+    XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC "YES"
+)

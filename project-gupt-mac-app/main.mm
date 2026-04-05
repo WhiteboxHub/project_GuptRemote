@@ -68,7 +68,7 @@
 
     server->Start();
     
-    std::thread([this]() {
+    std::thread([self]() {
         while (true) {
             if (sessionActive) {
                 std::vector<uint8_t> jpeg;
