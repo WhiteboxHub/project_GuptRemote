@@ -38,11 +38,8 @@
     injector.Initialize();
     capturer.Initialize();
 
-    __weak AppDelegate *weakSelf = self;
-    server->SetMessageCallback([weakSelf](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
-        AppDelegate *strongSelf = weakSelf;
-        if (!strongSelf) return;
-
+    // In a manual memory environment, we use 'this' or 'self' directly as AppDelegate is the singleton app.
+    server->SetMessageCallback([self](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
         if (type == gupt::shared::MessageType::ConnectRequest) {
             NSLog(@"[DEBUG] Received connection request");
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -55,24 +52,24 @@
                     gupt::shared::ConnectResponse res;
                     res.accepted = true;
                     std::strncpy(res.reason, "Welcome", sizeof(res.reason));
-                    strongSelf->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
-                    strongSelf->sessionActive = true;
+                    self->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
+                    self->sessionActive = true;
                     NSLog(@"[DEBUG] Session accepted");
                 } else {
                     gupt::shared::ConnectResponse res;
                     res.accepted = false;
                     std::strncpy(res.reason, "User Denied", sizeof(res.reason));
-                    strongSelf->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
+                    self->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
                     NSLog(@"[DEBUG] Session denied by user");
                 }
             });
-        } else if (strongSelf->sessionActive) {
+        } else if (self->sessionActive) {
             if (type == gupt::shared::MessageType::MouseEvent && payload.size() >= sizeof(gupt::shared::MouseEvent)) {
                 auto ev = (const gupt::shared::MouseEvent*)payload.data();
-                strongSelf->injector.IngestMouseEvent(*ev);
+                self->injector.IngestMouseEvent(*ev);
             } else if (type == gupt::shared::MessageType::KeyboardEvent && payload.size() >= sizeof(gupt::shared::KeyboardEvent)) {
                 auto ev = (const gupt::shared::KeyboardEvent*)payload.data();
-                strongSelf->injector.IngestKeyboardEvent(*ev);
+                self->injector.IngestKeyboardEvent(*ev);
             }
         }
     });
@@ -99,11 +96,7 @@
 
 - (void)runClientMode:(NSString*)ip {
     client = new gupt::core::network::TcpClient();
-    __weak AppDelegate *weakSelf = self;
-    client->SetMessageCallback([weakSelf](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
-        AppDelegate *strongSelf = weakSelf;
-        if (!strongSelf) return;
-
+    client->SetMessageCallback([self](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
         if (type == gupt::shared::MessageType::ConnectResponse && payload.size() >= sizeof(gupt::shared::ConnectResponse)) {
              auto res = (const gupt::shared::ConnectResponse*)payload.data();
              NSLog(@"[DEBUG] Connection response: accepted=%d", res->accepted);
@@ -115,8 +108,8 @@
             NSImage *image = [[NSImage alloc] initWithData:data];
             if (image) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    strongSelf.remoteView.latestImage = image;
-                    [strongSelf.remoteView setNeedsDisplay:YES];
+                    self.remoteView.latestImage = image;
+                    [self.remoteView setNeedsDisplay:YES];
                 });
             }
         }
