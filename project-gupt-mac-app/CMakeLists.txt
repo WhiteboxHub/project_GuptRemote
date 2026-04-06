@@ -8,7 +8,8 @@ add_definitions(-DGL_SILENCE_DEPRECATION)
 
 # Core and Shared headers
 include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR})
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/Shared)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../Shared)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/Shared) # Fallback
 
 file(GLOB_RECURSE SOURCES 
     "*.mm" 
