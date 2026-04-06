@@ -6,6 +6,10 @@
 #import <thread>
 #import <mutex>
 
+// --- Forward Declarations ---
+@class AppDelegate;
+static AppDelegate *g_appDelegate = nil;
+
 // --- Client View for Displaying Remote Screen ---
 @interface RemoteView : NSView
 @property (strong) NSImage *latestImage;
@@ -21,6 +25,7 @@
 @end
 
 @interface AppDelegate : NSObject <NSApplicationDelegate> {
+@public
     gupt::core::capture::ScreenCapturer capturer;
     gupt::core::input::InputInjector injector;
     gupt::core::network::TcpServer *server;
@@ -31,6 +36,58 @@
 @property (strong) RemoteView *remoteView;
 @end
 
+// --- C-style callback to avoid Objective-C++ Lambda-Capture Issues ---
+void MessageCallback(gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
+    if (!g_appDelegate) return;
+
+    if (type == gupt::shared::MessageType::ConnectRequest) {
+        NSLog(@"[DEBUG] Received connection request");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = @"Connection Request";
+            alert.informativeText = @"A remote peer wants to connect to your Mac. Allow?";
+            [alert addButtonWithTitle:@"Allow"];
+            [alert addButtonWithTitle:@"Deny"];
+            if ([alert runModal] == NSAlertFirstButtonReturn) {
+                gupt::shared::ConnectResponse res;
+                res.accepted = true;
+                std::strncpy(res.reason, "Welcome", sizeof(res.reason));
+                g_appDelegate->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
+                g_appDelegate->sessionActive = true;
+                NSLog(@"[DEBUG] Session accepted");
+            } else {
+                gupt::shared::ConnectResponse res;
+                res.accepted = false;
+                std::strncpy(res.reason, "User Denied", sizeof(res.reason));
+                g_appDelegate->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
+            }
+        });
+    } else if (type == gupt::shared::MessageType::ConnectResponse && payload.size() >= sizeof(gupt::shared::ConnectResponse)) {
+        auto res = (const gupt::shared::ConnectResponse*)payload.data();
+        NSLog(@"[DEBUG] Connection response received: accepted=%d", res->accepted);
+    } else if (type == gupt::shared::MessageType::FrameData) {
+        size_t off = sizeof(gupt::shared::FrameDataHeader);
+        if (payload.size() > off) {
+            NSData *data = [NSData dataWithBytes:payload.data() + off length:payload.size() - off];
+            NSImage *image = [[NSImage alloc] initWithData:data];
+            if (image) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    g_appDelegate.remoteView.latestImage = image;
+                    [g_appDelegate.remoteView setNeedsDisplay:YES];
+                });
+            }
+        }
+    } else if (g_appDelegate->sessionActive) {
+        if (type == gupt::shared::MessageType::MouseEvent && payload.size() >= sizeof(gupt::shared::MouseEvent)) {
+            auto ev = (const gupt::shared::MouseEvent*)payload.data();
+            g_appDelegate->injector.IngestMouseEvent(*ev);
+        } else if (type == gupt::shared::MessageType::KeyboardEvent && payload.size() >= sizeof(gupt::shared::KeyboardEvent)) {
+            auto ev = (const gupt::shared::KeyboardEvent*)payload.data();
+            g_appDelegate->injector.IngestKeyboardEvent(*ev);
+        }
+    }
+}
+
 @implementation AppDelegate
 
 - (void)runHostMode {
@@ -38,42 +95,7 @@
     injector.Initialize();
     capturer.Initialize();
 
-    // In a manual memory environment, we use 'this' or 'self' directly as AppDelegate is the singleton app.
-    server->SetMessageCallback([self](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
-        if (type == gupt::shared::MessageType::ConnectRequest) {
-            NSLog(@"[DEBUG] Received connection request");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSAlert *alert = [[NSAlert alloc] init];
-                alert.messageText = @"Connection Request";
-                alert.informativeText = @"A remote peer wants to connect to your Mac. Allow?";
-                [alert addButtonWithTitle:@"Allow"];
-                [alert addButtonWithTitle:@"Deny"];
-                if ([alert runModal] == NSAlertFirstButtonReturn) {
-                    gupt::shared::ConnectResponse res;
-                    res.accepted = true;
-                    std::strncpy(res.reason, "Welcome", sizeof(res.reason));
-                    self->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
-                    self->sessionActive = true;
-                    NSLog(@"[DEBUG] Session accepted");
-                } else {
-                    gupt::shared::ConnectResponse res;
-                    res.accepted = false;
-                    std::strncpy(res.reason, "User Denied", sizeof(res.reason));
-                    self->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
-                    NSLog(@"[DEBUG] Session denied by user");
-                }
-            });
-        } else if (self->sessionActive) {
-            if (type == gupt::shared::MessageType::MouseEvent && payload.size() >= sizeof(gupt::shared::MouseEvent)) {
-                auto ev = (const gupt::shared::MouseEvent*)payload.data();
-                self->injector.IngestMouseEvent(*ev);
-            } else if (type == gupt::shared::MessageType::KeyboardEvent && payload.size() >= sizeof(gupt::shared::KeyboardEvent)) {
-                auto ev = (const gupt::shared::KeyboardEvent*)payload.data();
-                self->injector.IngestKeyboardEvent(*ev);
-            }
-        }
-    });
-
+    server->SetMessageCallback(MessageCallback);
     server->Start();
     NSLog(@"[DEBUG] Host server started on port 8080");
     
@@ -86,7 +108,7 @@
                     gupt::shared::FrameDataHeader header{0, w, h, 32, false, 0};
                     server->SendRaw(gupt::shared::SerializeFrame(header, jpeg));
                 } else {
-                    NSLog(@"[DEBUG] Failed to capture frame (Check Screen Recording Permissions!)");
+                    // NSLog(@"[DEBUG] Failed to capture frame");
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
@@ -96,24 +118,7 @@
 
 - (void)runClientMode:(NSString*)ip {
     client = new gupt::core::network::TcpClient();
-    client->SetMessageCallback([self](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
-        if (type == gupt::shared::MessageType::ConnectResponse && payload.size() >= sizeof(gupt::shared::ConnectResponse)) {
-             auto res = (const gupt::shared::ConnectResponse*)payload.data();
-             NSLog(@"[DEBUG] Connection response: accepted=%d", res->accepted);
-        } else if (type == gupt::shared::MessageType::FrameData) {
-            size_t off = sizeof(gupt::shared::FrameDataHeader);
-            if (payload.size() <= off) return;
-            
-            NSData *data = [NSData dataWithBytes:payload.data() + off length:payload.size() - off];
-            NSImage *image = [[NSImage alloc] initWithData:data];
-            if (image) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    self.remoteView.latestImage = image;
-                    [self.remoteView setNeedsDisplay:YES];
-                });
-            }
-        }
-    });
+    client->SetMessageCallback(MessageCallback);
 
     NSLog(@"[DEBUG] Client connecting to %@", ip);
     if (client->Connect([ip UTF8String], 8080)) {
@@ -128,6 +133,7 @@
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
+    g_appDelegate = self;
     NSAlert *modeAlert = [[NSAlert alloc] init];
     modeAlert.messageText = @"Select Mode";
     [modeAlert addButtonWithTitle:@"Host"];
