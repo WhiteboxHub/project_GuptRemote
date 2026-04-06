@@ -38,7 +38,11 @@
     injector.Initialize();
     capturer.Initialize();
 
-    server->SetMessageCallback([&](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
+    __weak AppDelegate *weakSelf = self;
+    server->SetMessageCallback([weakSelf](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
+        AppDelegate *strongSelf = weakSelf;
+        if (!strongSelf) return;
+
         if (type == gupt::shared::MessageType::ConnectRequest) {
             NSLog(@"[DEBUG] Received connection request");
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -51,24 +55,24 @@
                     gupt::shared::ConnectResponse res;
                     res.accepted = true;
                     std::strncpy(res.reason, "Welcome", sizeof(res.reason));
-                    server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
-                    sessionActive = true;
+                    strongSelf->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
+                    strongSelf->sessionActive = true;
                     NSLog(@"[DEBUG] Session accepted");
                 } else {
                     gupt::shared::ConnectResponse res;
                     res.accepted = false;
                     std::strncpy(res.reason, "User Denied", sizeof(res.reason));
-                    server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
+                    strongSelf->server->SendRaw(gupt::shared::SerializeMessage(gupt::shared::MessageType::ConnectResponse, res));
                     NSLog(@"[DEBUG] Session denied by user");
                 }
             });
-        } else if (sessionActive) {
-            if (type == gupt::shared::MessageType::MouseEvent) {
+        } else if (strongSelf->sessionActive) {
+            if (type == gupt::shared::MessageType::MouseEvent && payload.size() >= sizeof(gupt::shared::MouseEvent)) {
                 auto ev = (const gupt::shared::MouseEvent*)payload.data();
-                injector.IngestMouseEvent(*ev);
-            } else if (type == gupt::shared::MessageType::KeyboardEvent) {
+                strongSelf->injector.IngestMouseEvent(*ev);
+            } else if (type == gupt::shared::MessageType::KeyboardEvent && payload.size() >= sizeof(gupt::shared::KeyboardEvent)) {
                 auto ev = (const gupt::shared::KeyboardEvent*)payload.data();
-                injector.IngestKeyboardEvent(*ev);
+                strongSelf->injector.IngestKeyboardEvent(*ev);
             }
         }
     });
@@ -82,7 +86,6 @@
                 std::vector<uint8_t> jpeg;
                 uint32_t w, h;
                 if (capturer.CaptureNextFrameJpeg(jpeg, w, h, 80)) {
-                    // NSLog(@"[DEBUG] Captured frame %d x %d, size %zu bytes", w, h, jpeg.size());
                     gupt::shared::FrameDataHeader header{0, w, h, 32, false, 0};
                     server->SendRaw(gupt::shared::SerializeFrame(header, jpeg));
                 } else {
@@ -96,25 +99,26 @@
 
 - (void)runClientMode:(NSString*)ip {
     client = new gupt::core::network::TcpClient();
-    client->SetMessageCallback([&](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
-        if (type == gupt::shared::MessageType::ConnectResponse) {
+    __weak AppDelegate *weakSelf = self;
+    client->SetMessageCallback([weakSelf](gupt::shared::MessageType type, const std::vector<uint8_t>& payload) {
+        AppDelegate *strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        if (type == gupt::shared::MessageType::ConnectResponse && payload.size() >= sizeof(gupt::shared::ConnectResponse)) {
              auto res = (const gupt::shared::ConnectResponse*)payload.data();
-             NSLog(@"[DEBUG] Connection response: accepted=%d, reason=%s", res->accepted, res->reason);
+             NSLog(@"[DEBUG] Connection response: accepted=%d", res->accepted);
         } else if (type == gupt::shared::MessageType::FrameData) {
             size_t off = sizeof(gupt::shared::FrameDataHeader);
-            if (payload.size() <= off) {
-                NSLog(@"[ERROR] Received malformed frame data (size %zu)", payload.size());
-                return;
-            }
+            if (payload.size() <= off) return;
+            
             NSData *data = [NSData dataWithBytes:payload.data() + off length:payload.size() - off];
             NSImage *image = [[NSImage alloc] initWithData:data];
-            if (!image) {
-                NSLog(@"[ERROR] Failed to create NSImage from data (size %zu)", data.length);
+            if (image) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    strongSelf.remoteView.latestImage = image;
+                    [strongSelf.remoteView setNeedsDisplay:YES];
+                });
             }
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.remoteView.latestImage = image;
-                [self.remoteView setNeedsDisplay:YES];
-            });
         }
     });
 
